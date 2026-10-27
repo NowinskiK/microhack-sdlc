@@ -1,3 +1,4 @@
+import { useState } from 'react';
 import { Link } from 'react-router-dom';
 import { useCart } from '../context/CartContext';
 import { useTheme } from '../context/ThemeContext';
@@ -8,6 +9,7 @@ const formatCurrency = (amount: number) =>
 export default function Cart() {
   const { items, subtotal, updateQuantity, removeItem } = useCart();
   const { darkMode } = useTheme();
+  const [quantityDrafts, setQuantityDrafts] = useState<Record<number, string>>({});
   const textColor = darkMode ? 'text-light' : 'text-gray-800';
   const mutedTextColor = darkMode ? 'text-gray-400' : 'text-gray-600';
   const surfaceColor = darkMode ? 'bg-gray-800 border-gray-700' : 'bg-white border-gray-200';
@@ -64,13 +66,22 @@ export default function Cart() {
                         type="number"
                         min="1"
                         step="1"
-                        value={item.quantity}
+                        value={quantityDrafts[item.productId] ?? String(item.quantity)}
                         onChange={(event) => {
-                          const quantity = Number(event.target.value);
-                          if (Number.isSafeInteger(quantity) && quantity > 0) {
+                          const value = event.target.value;
+                          setQuantityDrafts((drafts) => ({ ...drafts, [item.productId]: value }));
+                          const quantity = Number(value);
+                          if (value !== '' && Number.isSafeInteger(quantity) && quantity > 0) {
                             updateQuantity(item.productId, quantity);
                           }
                         }}
+                        onBlur={() =>
+                          setQuantityDrafts((drafts) => {
+                            const nextDrafts = { ...drafts };
+                            delete nextDrafts[item.productId];
+                            return nextDrafts;
+                          })
+                        }
                         className={`${darkMode ? 'border-gray-600 bg-gray-900 text-light' : 'border-gray-300 bg-white text-gray-800'} w-20 rounded border px-2 py-1 focus:border-primary focus:outline-none focus:ring-1 focus:ring-primary`}
                       />
                     </div>

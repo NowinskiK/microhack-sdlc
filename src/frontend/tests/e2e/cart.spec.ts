@@ -34,8 +34,12 @@ test.describe('Cart review', () => {
   test('updates totals when quantity changes and shows the empty state after removal', async ({
     page,
   }) => {
-    await page.getByLabel('Quantity of Test Feeder').fill('3');
-    await expect(page.getByLabel('Quantity of Test Feeder')).toHaveValue('3');
+    const quantity = page.getByLabel('Quantity of Test Feeder');
+    await quantity.fill('');
+    await expect(quantity).toHaveValue('');
+    await expect(page.getByTestId('cart-subtotal')).toHaveText('$25.00');
+    await quantity.fill('3');
+    await expect(quantity).toHaveValue('3');
     await expect(page.locator('article').getByText('$37.50')).toBeVisible();
     await expect(page.getByTestId('cart-subtotal')).toHaveText('$37.50');
 
