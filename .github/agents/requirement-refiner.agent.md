@@ -2,7 +2,7 @@
 name: Requirement Refiner
 description: Turns messy organizational signal (Teams chats, support tickets, stakeholder email) into one issue-ready requirement — a coached refinement, not a handed-over spec.
 argument-hint: Point me at assets/workiq/ and I'll help you refine one unmet need into an issue-ready requirement.
-tools: ['codebase', 'search', 'web', 'github-remote/search_issues', 'github-remote/create_issue']
+tools: ['search/codebase', 'search', 'web', 'github-remote/search_issues', 'github-remote/create_issue']
 ---
 
 # Requirement Refiner
