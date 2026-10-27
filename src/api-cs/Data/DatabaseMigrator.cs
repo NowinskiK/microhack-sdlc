@@ -8,15 +8,39 @@ public sealed class DatabaseMigrator(
 {
     private readonly SqliteConnectionFactory _connectionFactory = connectionFactory;
     private readonly ILogger<DatabaseMigrator> _logger = logger;
+    private bool _initialized;
 
     public async Task InitializeAsync(bool seedOnStartup)
     {
+        _initialized = false;
         await using var connection = await _connectionFactory.OpenConnectionAsync();
         await EnsureMigrationsTableAsync(connection);
         await ApplyMigrationsAsync(connection);
         if (seedOnStartup)
         {
             await SeedIfNeededAsync(connection);
+        }
+        _initialized = true;
+    }
+
+    public async Task<bool> IsReadyAsync()
+    {
+        if (!_initialized)
+        {
+            return false;
+        }
+
+        try
+        {
+            await using var connection = await _connectionFactory.OpenConnectionAsync();
+            await using var command = connection.CreateCommand();
+            command.CommandText = "SELECT COUNT(*) FROM suppliers;";
+            await command.ExecuteScalarAsync();
+            return true;
+        }
+        catch (Exception)
+        {
+            return false;
         }
     }
 
@@ -46,6 +70,11 @@ public sealed class DatabaseMigrator(
             .GetFiles(migrationsDir, "*.sql")
             .OrderBy(Path.GetFileName)
             .ToList();
+
+        if (migrationFiles.Count == 0)
+        {
+            throw new InvalidOperationException($"No migration files found in: {migrationsDir}");
+        }
 
         foreach (var file in migrationFiles)
         {
@@ -148,8 +177,15 @@ public sealed class DatabaseMigrator(
 
     private static string ResolvePath(string relativePath)
     {
-        var configured = Environment.GetEnvironmentVariable("DB_MIGRATIONS_DIR");
-        if (!string.IsNullOrWhiteSpace(configured) && relativePath.Contains("migrations", StringComparison.OrdinalIgnoreCase))
+        var configuredEnvironmentVariable = relativePath.Contains("migrations", StringComparison.OrdinalIgnoreCase)
+            ? "DB_MIGRATIONS_DIR"
+            : relativePath.Contains("seed", StringComparison.OrdinalIgnoreCase)
+                ? "DB_SEED_DIR"
+                : null;
+        var configured = configuredEnvironmentVariable is null
+            ? null
+            : Environment.GetEnvironmentVariable(configuredEnvironmentVariable);
+        if (!string.IsNullOrWhiteSpace(configured))
         {
             return Path.GetFullPath(configured);
         }

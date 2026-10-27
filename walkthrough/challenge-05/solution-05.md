@@ -4,48 +4,63 @@
 
 Duration: 60 minutes
 
-## Prerequisites
+## Reference implementation
 
-Complete [Challenge 4](../challenge-04/solution-04.md). Confirm your **Azure prerequisites**: subscription/budget, Contributor on your scope, a working GitHub ↔ Azure **OIDC federated credential**, and region capacity.
+This checkout includes a working reference deployment path for the C#/.NET 10
+API and React frontend on Azure Container Apps. Challenge 5 remains optional:
+participants may follow, inspect, adapt, or replace this implementation rather
+than treating it as the only correct answer.
 
-## Approach
+The reference topology uses a public HTTPS nginx frontend that proxies `/api/*`
+to an internal API ingress. The API is pinned to one replica and uses a local,
+disposable SQLite database. ACR admin access is disabled; the deployment and
+runtime identities use GitHub OIDC and managed identity role assignments.
 
-The most operationally demanding challenge. **Get to a simple, working deploy early**, then refine — a reachable app on basic infra beats perfect templates that never ship. Auth and quota are the top time sinks.
+## Prerequisites and deployment
 
-Suggested pacing:
+1. Prepare an Azure subscription, budget, Container Apps region/quota, Azure CLI,
+   GitHub CLI, and a protected GitHub Environment.
+2. Register the required providers and bootstrap OIDC once:
 
-```
-Choose IaC + author templates            ~20 min
-Build the Actions pipeline               ~20 min
-Configure secure auth (OIDC/secrets)     ~10 min
-Deploy and verify                        ~10 min
-```
+   ```bash
+   az provider register --namespace Microsoft.App
+   az provider register --namespace Microsoft.OperationalInsights
+   az provider register --namespace Microsoft.ContainerRegistry
+   az provider register --namespace Microsoft.ManagedIdentity
 
-### Task 1: Choose IaC and author templates
+   ./scripts/setup-oidc.sh -g <resource-group> -l <region> \
+     -r <owner/repo> -e demo
+   ```
 
-- Pick **Bicep** or **Terraform** and let Copilot scaffold the resources: compute for frontend/API, storage/database, supporting services.
-- 💡 **Optional starter scaffold** — [`infra/`](../../infra/README.md) (Bicep) is bundled in this MicroHack folder; combined with the bundled [`.github/workflows/deploy.yml`](../../.github/workflows/deploy.yml) it sketches a **Container Apps + ACR + Log Analytics + OIDC** topology — two apps (`api` on port 3000, `frontend`/nginx on port 80). The design decisions (SKUs, database/storage strategy, API ingress visibility, secrets, scaling, image build/push, frontend→api discovery) are deliberately left as `TODO`. It's a de-risking starting point, **not** a required or "correct" answer — extend it, replace it, or ignore it. See [`infra/README.md`](../../infra/README.md).
+3. Configure the `demo` GitHub Environment with the approval rules appropriate
+   for the event. The deployment identity needs Contributor and User Access
+   Administrator scoped to the resource group so Bicep can create ACR role
+   assignments. No client secret is needed.
+4. Run **Actions → Deploy C# API and frontend → Run workflow**, or push to
+   `main`. The workflow builds/tests both apps, compiles and validates Bicep,
+   provisions shared infrastructure, pushes commit-SHA images, deploys both
+   apps, waits for ready revisions, and exercises the API flow through the
+   frontend.
+5. Open the frontend URL in the run summary and verify product browsing, order
+   creation, and order history.
 
-### Task 2: Build one linear pipeline
+For exact configuration, verification commands, failure diagnosis, rollback, and
+cleanup, follow the [Azure deployment guide](../../infra/README.md).
 
-- Author a single GitHub Actions workflow that goes **build → test → provision → deploy**. Keep it linear and readable.
+## Operational limits
 
-### Task 3: Configure secure auth
+The API is internal-only; the browser uses the frontend origin and never sees the
+API hostname or target port. Readiness requires a successful SQLite database
+check; liveness does not depend on database availability. The API must remain at
+exactly one replica because each container has its own local database.
 
-- 🔑 Use **OIDC federated credentials** (with User-Assigned Managed Identity) for Azure auth, not long-lived secrets. The **most common wall** is the federated-credential subject (`repo:<owner>/<repo>:ref:refs/heads/main` or an environment subject) or a missing role. If auth fails in the pipeline, check this first and confirm the identity has Contributor on your scope. Note that [`setup-oidc.sh`](../../scripts/setup-oidc.sh) is bundled in `scripts/` to help with this configuration.
+SQLite data is not durable. Container replacement, a new revision, or scaling
+events can reset demo data. Rolling back image versions deploys prior application
+code but does not restore lost data. SQLite WAL mode is used, so Azure Files is
+not presented as a drop-in persistence option.
 
-### Task 4: Deploy and verify
+The deployment is a baseline demo, not production guidance: durable storage,
+backups, private networking, application authentication, and high availability
+remain out of scope.
 
-- Get a simple deploy reachable first, then refine SKUs and structure. Load the app's Azure URL and exercise a real flow (e.g. the cart). Ask Copilot for **Azure Well-Architected** guidance when choosing SKUs/services.
-
-## Common blockers
-
-- **Azure auth fails** → almost always the OIDC/federated credential or a missing role.
-- **Quota / capacity errors** → fall back to a smaller SKU or an alternate region.
-- **Provisioning partially fails** → tear down the resource group and re-provision clean rather than patching half-built state.
-- **Secrets committed to source** → stop and move them to GitHub secrets / OIDC.
-- **Pipeline green but app unreachable** → check ingress/networking and that the deploy targeted the provisioned resources.
-
-> No optional stretch. Fast finishers should harden the pipeline (environments, review gates) or get a head start on Challenge 6's observability.
-
-You successfully completed challenge 5! 🚀🚀🚀
+You successfully completed Challenge 5! 🚀🚀🚀

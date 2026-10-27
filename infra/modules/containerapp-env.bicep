@@ -1,13 +1,3 @@
-// =============================================================================
-// Module: containerapp-env.bicep  (Azure Container Apps managed environment)
-// -----------------------------------------------------------------------------
-// The shared environment both apps (api + frontend) run in. Apps in the same
-// environment can reach each other by app name for service discovery — this is
-// what lets the frontend's nginx proxy to the api (see API_HOST/API_PORT).
-//
-// STARTER SKELETON — compiles as-is; decisions left as // TODO.
-// =============================================================================
-
 @description('Azure region for the environment.')
 param location string
 
@@ -37,9 +27,7 @@ resource environment 'Microsoft.App/managedEnvironments@2024-03-01' = {
         sharedKey: logAnalyticsWorkspace.listKeys().primarySharedKey
       }
     }
-    // TODO: Decide whether you need a custom VNet (internal-only environment),
-    //       zone redundancy, or workload profiles (Consumption vs Dedicated).
-    //       The default is the public, Consumption-only profile — fine to start.
+    // This demo uses the default public Consumption environment without a custom VNet.
   }
 }
 

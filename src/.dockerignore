@@ -1,0 +1,10 @@
+**
+!api-cs
+!api-cs/**
+!database
+!database/migrations
+!database/migrations/**
+!database/seed
+!database/seed/**
+api-cs/bin
+api-cs/obj
