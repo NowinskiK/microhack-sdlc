@@ -60,3 +60,5 @@ var migrator = app.Services.GetRequiredService<DatabaseMigrator>();
 await migrator.InitializeAsync(seedOnStartup: true);
 
 app.Run();
+
+public partial class Program { }
