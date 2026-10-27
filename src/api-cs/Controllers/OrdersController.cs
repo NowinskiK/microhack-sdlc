@@ -12,8 +12,15 @@ public sealed class OrdersController(OrdersRepository repository) : ControllerBa
     private readonly OrdersRepository _repository = repository;
 
     [HttpGet]
-    public async Task<ActionResult<IReadOnlyList<Order>>> GetAll() =>
-        Ok(await _repository.FindAllAsync());
+    public async Task<ActionResult<IReadOnlyList<OrderHistory>>> GetAll([FromQuery] int? branchId)
+    {
+        if (!branchId.HasValue)
+        {
+            throw new ValidationException("branchId is required");
+        }
+
+        return Ok(await _repository.FindHistoryByBranchIdAsync(branchId.Value));
+    }
 
     [HttpGet("{id:int}")]
     public async Task<ActionResult<Order>> GetById(int id)
