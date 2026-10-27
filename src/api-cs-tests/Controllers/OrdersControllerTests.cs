@@ -1,5 +1,6 @@
 using System.Net;
 using System.Net.Http.Json;
+using System.Text.Json;
 using Microsoft.AspNetCore.Mvc.Testing;
 using Microsoft.Data.Sqlite;
 using OctoSupply.Api.Models;
@@ -24,6 +25,16 @@ public sealed class OrdersControllerTests
             using var factory = new WebApplicationFactory<Program>();
             using var client = factory.CreateClient();
             await InsertTestDataAsync(dbPath);
+
+            var openApi = await client.GetFromJsonAsync<JsonElement>("/api-docs.json");
+            var historyOperation = openApi
+                .GetProperty("paths")
+                .GetProperty("/api/orders")
+                .GetProperty("get");
+            Assert.Contains(
+                historyOperation.GetProperty("parameters").EnumerateArray(),
+                parameter => parameter.GetProperty("name").GetString() == "branchId" &&
+                             parameter.GetProperty("in").GetString() == "query");
 
             var response = await client.GetAsync("/api/orders?branchId=987650");
             Assert.Equal(HttpStatusCode.OK, response.StatusCode);

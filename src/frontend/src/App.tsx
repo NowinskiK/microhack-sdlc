@@ -11,6 +11,7 @@ import AdminProducts from './components/admin/AdminProducts';
 import { useTheme } from './context/ThemeContext';
 import Cart from './components/Cart';
 import { CartProvider } from './context/CartContext';
+import OrderHistoryPage from './components/OrderHistory';
 
 // Wrapper component to apply theme classes
 function ThemedApp() {
@@ -28,6 +29,7 @@ function ThemedApp() {
             <Route path="/about" element={<About />} />
             <Route path="/products" element={<Products />} />
             <Route path="/cart" element={<Cart />} />
+            <Route path="/order-history" element={<OrderHistoryPage />} />
             <Route path="/login" element={<Login />} />
             <Route path="/admin/products" element={<AdminProducts />} />
           </Routes>
