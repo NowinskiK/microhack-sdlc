@@ -1,0 +1,24 @@
+name: C# API tests
+
+on:
+  pull_request:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4.2.2
+
+      - name: Set up .NET 10
+        uses: actions/setup-dotnet@v4.3.1
+        with:
+          dotnet-version: '10.0.x'
+
+      - name: Run C# API tests
+        run: dotnet test src/api-cs-tests/OctoSupply.Api.Tests.csproj --configuration Release
