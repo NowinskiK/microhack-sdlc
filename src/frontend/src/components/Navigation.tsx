@@ -1,11 +1,13 @@
 import { Link } from 'react-router-dom';
 import { useAuth } from '../context/AuthContext';
 import { useTheme } from '../context/ThemeContext';
+import { useCart } from '../context/CartContext';
 import { useState } from 'react';
 
 export default function Navigation() {
   const { isLoggedIn, isAdmin, logout } = useAuth();
   const { darkMode, toggleTheme } = useTheme();
+  const { itemCount } = useCart();
   const [adminMenuOpen, setAdminMenuOpen] = useState(false);
 
   return (
@@ -84,7 +86,37 @@ export default function Navigation() {
               )}
             </div>
           </div>
-          <div className="flex items-center space-x-4">
+          <div className="flex items-center space-x-2 sm:space-x-4">
+            <Link
+              to="/cart"
+              aria-label={`Cart, ${itemCount} ${itemCount === 1 ? 'item' : 'items'}`}
+              className={`${darkMode ? 'text-light hover:text-primary' : 'text-gray-700 hover:text-primary'} flex items-center px-2 py-2 text-sm font-medium transition-colors`}
+            >
+              <svg
+                aria-hidden="true"
+                className="h-5 w-5 sm:hidden"
+                fill="none"
+                stroke="currentColor"
+                strokeWidth="1.8"
+                viewBox="0 0 24 24"
+              >
+                <path
+                  strokeLinecap="round"
+                  strokeLinejoin="round"
+                  d="M3 3h2l2.4 12.2a2 2 0 002 1.6h8.8a2 2 0 002-1.6L22 8H6"
+                />
+                <circle cx="10" cy="21" r="1" />
+                <circle cx="18" cy="21" r="1" />
+              </svg>
+              <span className="hidden sm:inline">
+                Cart{itemCount > 0 ? ` (${itemCount})` : ''}
+              </span>
+              {itemCount > 0 && (
+                <span className="ml-1 rounded-full bg-primary px-1.5 text-xs text-white sm:hidden">
+                  {itemCount}
+                </span>
+              )}
+            </Link>
             <button
               onClick={toggleTheme}
               className="p-2 rounded-full focus:outline-none transition-colors"
