@@ -34,7 +34,7 @@ public sealed class DatabaseMigrator(
         {
             await using var connection = await _connectionFactory.OpenConnectionAsync();
             await using var command = connection.CreateCommand();
-            command.CommandText = "SELECT COUNT(*) FROM migrations;";
+            command.CommandText = "SELECT COUNT(*) FROM suppliers;";
             await command.ExecuteScalarAsync();
             return true;
         }
@@ -70,6 +70,11 @@ public sealed class DatabaseMigrator(
             .GetFiles(migrationsDir, "*.sql")
             .OrderBy(Path.GetFileName)
             .ToList();
+
+        if (migrationFiles.Count == 0)
+        {
+            throw new InvalidOperationException($"No migration files found in: {migrationsDir}");
+        }
 
         foreach (var file in migrationFiles)
         {

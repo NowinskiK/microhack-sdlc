@@ -56,13 +56,16 @@ app.UseMiddleware<ErrorHandlingMiddleware>();
 app.MapGet("/", () => "Hello, world!");
 app.MapGet("/health/live", () => Results.Ok(new { status = "ok" }))
     .WithSummary("Liveness check")
-    .WithDescription("Confirms the API process is running. This check does not access the database.");
+    .WithDescription("Confirms the API process is running. This check does not access the database.")
+    .Produces(StatusCodes.Status200OK);
 app.MapGet("/health/ready", async (DatabaseMigrator databaseMigrator) =>
     await databaseMigrator.IsReadyAsync()
         ? Results.Ok(new { status = "ready" })
         : Results.StatusCode(StatusCodes.Status503ServiceUnavailable))
     .WithSummary("Readiness check")
-    .WithDescription("Confirms startup initialization completed and the SQLite database is accessible.");
+    .WithDescription("Confirms startup initialization completed and the SQLite database is accessible.")
+    .Produces(StatusCodes.Status200OK)
+    .Produces(StatusCodes.Status503ServiceUnavailable);
 app.MapControllers();
 
 var migrator = app.Services.GetRequiredService<DatabaseMigrator>();

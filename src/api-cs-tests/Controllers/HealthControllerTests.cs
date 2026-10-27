@@ -22,24 +22,63 @@ public sealed class HealthControllerTests
                 .GetProperty("status").GetString());
 
             var openApi = await client.GetFromJsonAsync<JsonElement>("/api-docs.json");
-            Assert.True(openApi.GetProperty("paths").TryGetProperty("/health/live", out _));
-            Assert.True(openApi.GetProperty("paths").TryGetProperty("/health/ready", out _));
+            var paths = openApi.GetProperty("paths");
+            Assert.True(paths.TryGetProperty("/health/live", out _));
+            Assert.True(paths.TryGetProperty("/health/ready", out var readinessPath));
+            Assert.True(readinessPath.GetProperty("get").GetProperty("responses").TryGetProperty("503", out _));
         });
     }
 
     [Fact]
-    public void MissingMigrationsFailApplicationStartup()
+    public async Task ReadinessFailsWhenTheInitializedDatabaseIsUnavailableButLivenessRemainsHealthy()
+    {
+        await WithApiAsync(async client =>
+        {
+            var previousDbFile = Environment.GetEnvironmentVariable("DB_FILE");
+            var unavailableDbDirectory = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
+            try
+            {
+                Environment.SetEnvironmentVariable(
+                    "DB_FILE",
+                    Path.Combine(unavailableDbDirectory, "uninitialized.db"));
+
+                Assert.Equal(HttpStatusCode.OK, (await client.GetAsync("/health/live")).StatusCode);
+                Assert.Equal(
+                    HttpStatusCode.ServiceUnavailable,
+                    (await client.GetAsync("/health/ready")).StatusCode);
+            }
+            finally
+            {
+                Environment.SetEnvironmentVariable("DB_FILE", previousDbFile);
+                if (Directory.Exists(unavailableDbDirectory))
+                {
+                    Directory.Delete(unavailableDbDirectory, recursive: true);
+                }
+            }
+        });
+    }
+
+    [Theory]
+    [InlineData(false)]
+    [InlineData(true)]
+    public void MissingOrEmptyMigrationsFailApplicationStartup(bool createMigrationsDirectory)
     {
         var dbPath = Path.Combine(Path.GetTempPath(), $"octosupply-api-tests-{Guid.NewGuid():N}.db");
+        var migrationsDir = Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N"));
         var previousDbFile = Environment.GetEnvironmentVariable("DB_FILE");
         var previousMigrationsDir = Environment.GetEnvironmentVariable("DB_MIGRATIONS_DIR");
         var previousSeedDir = Environment.GetEnvironmentVariable("DB_SEED_DIR");
         Environment.SetEnvironmentVariable("DB_FILE", dbPath);
-        Environment.SetEnvironmentVariable("DB_MIGRATIONS_DIR", Path.Combine(Path.GetTempPath(), Guid.NewGuid().ToString("N")));
+        Environment.SetEnvironmentVariable("DB_MIGRATIONS_DIR", migrationsDir);
         Environment.SetEnvironmentVariable("DB_SEED_DIR", null);
 
         try
         {
+            if (createMigrationsDirectory)
+            {
+                Directory.CreateDirectory(migrationsDir);
+            }
+
             using var factory = new WebApplicationFactory<Program>();
             Assert.ThrowsAny<Exception>(() => factory.CreateClient());
         }
@@ -49,6 +88,10 @@ public sealed class HealthControllerTests
             Environment.SetEnvironmentVariable("DB_MIGRATIONS_DIR", previousMigrationsDir);
             Environment.SetEnvironmentVariable("DB_SEED_DIR", previousSeedDir);
             Microsoft.Data.Sqlite.SqliteConnection.ClearAllPools();
+            if (Directory.Exists(migrationsDir))
+            {
+                Directory.Delete(migrationsDir, recursive: true);
+            }
             if (File.Exists(dbPath))
             {
                 File.Delete(dbPath);

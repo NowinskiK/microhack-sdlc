@@ -8,15 +8,15 @@
 #   - No Application Administrator / directory write privileges required.
 #   - It can additionally be attached to Azure resources (ACR pull, Key Vault, ...).
 #
-# Creates the identity, grants it Contributor on the target resource group, adds
-# federated credentials for this repo, and pushes the ids into GitHub Actions
-# secrets/variables.
+# Creates the deployment identity and its GitHub Environment federation. The
+# identity receives deployment and scoped role-assignment permissions on the
+# resource group so Bicep can grant ACR pull/push roles.
 #
 # Prereqs: az login, and (optionally) gh auth login with a token that can write
 # Actions secrets. If the gh write fails the values are printed for manual entry.
 #
 # Usage:
-#   ./scripts/setup-oidc.sh [-g <resource-group>] [-l <location>] [-r <owner/repo>] [-b <branch>] [-e <gh-environment>] [-n <identity-name>]
+#   ./scripts/setup-oidc.sh -g <resource-group> -l <location> [-r <owner/repo>] [-e <gh-environment>] [-n <identity-name>]
 
 set -euo pipefail
 
@@ -24,7 +24,7 @@ RESOURCE_GROUP=""
 LOCATION=""
 REPO=""
 BRANCH="main"
-GH_ENVIRONMENT=""
+GH_ENVIRONMENT="demo"
 IDENTITY_NAME=""
 ROLE="Contributor"
 
@@ -47,19 +47,24 @@ command -v gh >/dev/null || { echo "gh CLI not found" >&2; exit 1; }
 
 az account show >/dev/null 2>&1 || { echo "Run 'az login' first." >&2; exit 1; }
 
+if [[ -z "$RESOURCE_GROUP" || -z "$LOCATION" ]]; then
+  echo "Both -g <resource-group> and -l <location> are required." >&2
+  exit 1
+fi
+
 if [[ -z "$REPO" ]]; then
   REPO=$(gh repo view --json nameWithOwner -q .nameWithOwner)
 fi
 
 PLAIN_REPO_SUBJECT_PREFIX="repo:$REPO"
 EMU_REPO_SUBJECT_PREFIX=""
-if repo_subject_parts=$(gh api "repos/$REPO" --jq '[.owner.login, .owner.id, .name, .id] | @tsv' 2>/dev/null); then
+if repo_subject_parts=$(gh api "repos/$REPO" --jq '[.owner.login, .owner.id, .name, .id] | @tsv'); then
   read -r REPO_OWNER REPO_OWNER_ID REPO_NAME REPO_ID <<<"$repo_subject_parts"
   if [[ -n "$REPO_OWNER" && -n "$REPO_OWNER_ID" && -n "$REPO_NAME" && -n "$REPO_ID" ]]; then
     EMU_REPO_SUBJECT_PREFIX="repo:${REPO_OWNER}@${REPO_OWNER_ID}/${REPO_NAME}@${REPO_ID}"
   fi
 else
-  echo "! Could not read GitHub repository ids; skipping Enterprise Managed User OIDC subjects."
+  echo "Could not read GitHub repository ids; continuing with the standard GitHub OIDC subject."
 fi
 
 # Managed identity names allow only alphanumerics, hyphens and underscores.
@@ -73,7 +78,9 @@ echo "Subscription:   $SUBSCRIPTION_ID"
 echo "Tenant:         $TENANT_ID"
 echo "Resource group: $RESOURCE_GROUP ($LOCATION)"
 echo "Identity:       $IDENTITY_NAME (user-assigned managed identity)"
-echo "Role:           $ROLE"
+echo "Deployment role: $ROLE"
+echo "Role assignment: User Access Administrator (resource group scope)"
+echo "GitHub environment: ${GH_ENVIRONMENT:-branch $BRANCH}"
 echo
 
 # --- 1. Resource group -------------------------------------------------------
@@ -99,15 +106,41 @@ read -r CLIENT_ID PRINCIPAL_ID IDENTITY_RESOURCE_ID <<<"$(az identity show \
 
 # --- 3. Role assignment (scoped to the resource group) -----------------------
 SCOPE="/subscriptions/$SUBSCRIPTION_ID/resourceGroups/$RESOURCE_GROUP"
-# --assignee-object-id + principal type skips the Graph lookup, which also avoids
-# a race against replication of a freshly created identity.
-az role assignment create \
-  --assignee-object-id "$PRINCIPAL_ID" \
-  --assignee-principal-type ServicePrincipal \
-  --role "$ROLE" \
-  --scope "$SCOPE" \
-  -o none 2>/dev/null || true
-echo "✓ $ROLE granted on $SCOPE"
+ensure_role_assignment() {
+  local role="$1"
+  local assignment_count
+  assignment_count=$(az role assignment list \
+    --all \
+    --assignee-object-id "$PRINCIPAL_ID" \
+    --fill-principal-name false \
+    --scope "$SCOPE" \
+    --query "[?roleDefinitionName=='$role'] | length(@)" \
+    -o tsv)
+  if [[ "$assignment_count" == "0" ]]; then
+    az role assignment create \
+      --assignee-object-id "$PRINCIPAL_ID" \
+      --assignee-principal-type ServicePrincipal \
+      --role "$role" \
+      --scope "$SCOPE" \
+      -o none
+  fi
+
+  assignment_count=$(az role assignment list \
+    --all \
+    --assignee-object-id "$PRINCIPAL_ID" \
+    --fill-principal-name false \
+    --scope "$SCOPE" \
+    --query "[?roleDefinitionName=='$role'] | length(@)" \
+    -o tsv)
+  [[ "$assignment_count" != "0" ]] || {
+    echo "Role assignment '$role' was not found on $SCOPE after creation." >&2
+    return 1
+  }
+  echo "✓ $role granted on $SCOPE"
+}
+
+ensure_role_assignment "$ROLE"
+ensure_role_assignment "User Access Administrator"
 
 # --- 4. Federated credentials ------------------------------------------------
 add_federated_credential() {
@@ -130,16 +163,21 @@ add_federated_credential() {
   echo "  · added federated credential: $subject"
 }
 
-add_federated_credential "gh-branch-$BRANCH" "$PLAIN_REPO_SUBJECT_PREFIX:ref:refs/heads/$BRANCH"
-add_federated_credential "gh-pull-request" "$PLAIN_REPO_SUBJECT_PREFIX:pull_request"
 if [[ -n "$GH_ENVIRONMENT" ]]; then
-  add_federated_credential "gh-env-$GH_ENVIRONMENT" "$PLAIN_REPO_SUBJECT_PREFIX:environment:$GH_ENVIRONMENT"
+  ENVIRONMENT_CREDENTIAL_NAME=$(printf '%s' "$GH_ENVIRONMENT" | tr -cd '[:alnum:]-')
+  [[ -n "$ENVIRONMENT_CREDENTIAL_NAME" ]] || {
+    echo "GitHub Environment name must contain at least one alphanumeric character." >&2
+    exit 1
+  }
+  add_federated_credential "gh-env-${ENVIRONMENT_CREDENTIAL_NAME}" "$PLAIN_REPO_SUBJECT_PREFIX:environment:$GH_ENVIRONMENT"
+else
+  add_federated_credential "gh-branch-$BRANCH" "$PLAIN_REPO_SUBJECT_PREFIX:ref:refs/heads/$BRANCH"
 fi
 if [[ -n "$EMU_REPO_SUBJECT_PREFIX" ]]; then
-  add_federated_credential "gh-emu-branch-$BRANCH" "$EMU_REPO_SUBJECT_PREFIX:ref:refs/heads/$BRANCH"
-  add_federated_credential "gh-emu-pull-request" "$EMU_REPO_SUBJECT_PREFIX:pull_request"
   if [[ -n "$GH_ENVIRONMENT" ]]; then
-    add_federated_credential "gh-emu-env-$GH_ENVIRONMENT" "$EMU_REPO_SUBJECT_PREFIX:environment:$GH_ENVIRONMENT"
+    add_federated_credential "gh-emu-env-${ENVIRONMENT_CREDENTIAL_NAME}" "$EMU_REPO_SUBJECT_PREFIX:environment:$GH_ENVIRONMENT"
+  else
+    add_federated_credential "gh-emu-branch-$BRANCH" "$EMU_REPO_SUBJECT_PREFIX:ref:refs/heads/$BRANCH"
   fi
 fi
 echo "✓ federated credentials configured"
@@ -157,6 +195,8 @@ push_secret AZURE_SUBSCRIPTION_ID "$SUBSCRIPTION_ID"
 push_variable AZURE_RESOURCE_GROUP    "$RESOURCE_GROUP"
 push_variable AZURE_LOCATION          "$LOCATION"
 push_variable AZURE_IDENTITY_RESOURCE_ID "$IDENTITY_RESOURCE_ID"
+push_variable AZURE_DEPLOYER_PRINCIPAL_ID "$PRINCIPAL_ID"
+push_variable AZURE_GITHUB_ENVIRONMENT "$GH_ENVIRONMENT"
 
 echo
 if [[ "$gh_write_ok" == "1" ]]; then
@@ -179,14 +219,14 @@ else
     AZURE_RESOURCE_GROUP        $RESOURCE_GROUP
     AZURE_LOCATION              $LOCATION
     AZURE_IDENTITY_RESOURCE_ID  $IDENTITY_RESOURCE_ID
+    AZURE_DEPLOYER_PRINCIPAL_ID $PRINCIPAL_ID
+    AZURE_GITHUB_ENVIRONMENT    $GH_ENVIRONMENT
 EOF
 fi
 
 cat <<EOF
 
-Reuse tip: the same identity can pull from ACR without admin credentials —
-  az role assignment create --assignee-object-id $PRINCIPAL_ID \\
-    --assignee-principal-type ServicePrincipal --role AcrPull \\
-    --scope <acr-resource-id>
-then reference \$AZURE_IDENTITY_RESOURCE_ID as the container app's userAssignedIdentity.
+The deployment identity needs Contributor and User Access Administrator on the
+resource group. The Bicep deployment grants AcrPush to this identity and AcrPull
+to the runtime identities on the registry.
 EOF

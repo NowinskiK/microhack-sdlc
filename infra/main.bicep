@@ -1,85 +1,53 @@
-// =============================================================================
-// main.bicep — Challenge 5 starter scaffold (OPTIONAL, SKELETON — not an answer key)
-// -----------------------------------------------------------------------------
-// Target architecture expressed here (Azure Container Apps):
-//
-//   ACR ──images──> ┌─────────────── Container Apps Environment ───────────────┐
-//                   │  frontend (nginx, :80, external)  ──proxy──>  api (:3000) │
-//                   └───────────────────────────────────────────────────────────┘
-//                                    │ logs
-//                            Log Analytics workspace
-//
-// The frontend's nginx proxies /api to the api app using API_HOST / API_PORT
-// (see src/frontend/entrypoint.sh + nginx.conf). Within one Container Apps
-// environment, apps can address each other by app name, which is what makes
-// that service discovery work.
-//
-// WHAT'S PROVIDED: the wiring, parameters, module structure, outputs.
-// WHAT'S LEFT TO YOU (look for // TODO): SKUs, ingress visibility for the api,
-// exact env/secrets, scaling rules, and the database/storage strategy.
-//
-// Deploy manually:
-//   az group create -n <rg> -l <location>
-//   az deployment group create -g <rg> -f infra/main.bicep -p infra/main.parameters.json
-// =============================================================================
-
 targetScope = 'resourceGroup'
 
 @description('Azure region for all resources. Defaults to the resource group location.')
 param location string = resourceGroup().location
 
-@description('Short prefix used to derive resource names (lowercase letters/numbers).')
+@description('Lowercase alphanumeric prefix used for resource names.')
 @minLength(2)
 @maxLength(12)
 param namePrefix string = 'octocat'
 
-@description('Environment name / suffix (e.g. dev, test, hack). Keeps names unique per env.')
+@description('Short environment suffix used for resource names.')
+@minLength(2)
+@maxLength(8)
 param environmentName string = 'dev'
 
-@description('Container image reference for the API (e.g. <acr>.azurecr.io/api:<tag>).')
-param apiImage string
+@description('Provision only shared infrastructure first, then deploy application images.')
+@allowed([
+  'foundation'
+  'apps'
+])
+param deploymentStage string = 'foundation'
 
-@description('Container image reference for the frontend (e.g. <acr>.azurecr.io/frontend:<tag>).')
-param frontendImage string
+@description('Image reference used during the apps stage.')
+param apiImage string = ''
 
-@description('Minimum replicas for each app.')
-@minValue(0)
-param minReplicas int = 1
+@description('Image reference used during the apps stage.')
+param frontendImage string = ''
 
-@description('Maximum replicas for each app.')
-@minValue(1)
-param maxReplicas int = 3
+@description('Principal object ID of the OIDC deployment identity.')
+param deployerPrincipalId string
 
-// TODO: The scaffold passes ACR admin credentials into the frontend/api modules
-//       for a quick first deploy. Prefer a user-assigned managed identity with
-//       AcrPull and remove these entirely. Left as params so nothing is baked in.
-@description('ACR admin username (leave empty to switch modules to managed identity).')
-param registryUsername string = ''
-
-@description('ACR admin password (leave empty to switch modules to managed identity).')
-@secure()
-param registryPassword string = ''
-
-// -----------------------------------------------------------------------------
-// Derived names. Registry names must be globally unique and alphanumeric only.
-// -----------------------------------------------------------------------------
 var baseName = '${namePrefix}-${environmentName}'
-var registryName = toLower(replace('${namePrefix}${environmentName}acr', '-', ''))
+var registryName = toLower(replace('${namePrefix}${environmentName}acr${uniqueString(subscription().id, resourceGroup().id)}', '-', ''))
 var logAnalyticsName = '${baseName}-logs'
 var environmentResourceName = '${baseName}-env'
 var apiAppName = '${baseName}-api'
 var frontendAppName = '${baseName}-frontend'
+var apiIdentityName = '${baseName}-api-pull'
+var frontendIdentityName = '${baseName}-frontend-pull'
+var deployApps = deploymentStage == 'apps'
+var acrPullRoleId = '7f951dda-4ed3-468a-a7ca-43fe172d538d'
+var acrPushRoleId = '8311e382-0749-4cb8-b61a-304f252e45ec'
 
 var commonTags = {
   project: 'octocat-supply'
-  challenge: 'challenge-4-azure-deploy'
+  challenge: 'challenge-5-azure-deploy'
   managedBy: 'bicep'
   environment: environmentName
 }
 
-// -----------------------------------------------------------------------------
-// Container Registry
-// -----------------------------------------------------------------------------
 module registry 'modules/registry.bicep' = {
   name: 'registry'
   params: {
@@ -89,9 +57,6 @@ module registry 'modules/registry.bicep' = {
   }
 }
 
-// -----------------------------------------------------------------------------
-// Log Analytics (dependency of the Container Apps environment)
-// -----------------------------------------------------------------------------
 module logAnalytics 'modules/loganalytics.bicep' = {
   name: 'loganalytics'
   params: {
@@ -101,9 +66,6 @@ module logAnalytics 'modules/loganalytics.bicep' = {
   }
 }
 
-// -----------------------------------------------------------------------------
-// Container Apps managed environment
-// -----------------------------------------------------------------------------
 module environment 'modules/containerapp-env.bicep' = {
   name: 'containerapp-env'
   params: {
@@ -114,14 +76,62 @@ module environment 'modules/containerapp-env.bicep' = {
   }
 }
 
-// -----------------------------------------------------------------------------
-// API container app — listens on 3000.
-// -----------------------------------------------------------------------------
-// TODO: Ingress visibility decision. `externalIngress: true` gives the api its
-//       own public URL (handy for debugging/tests). Set it to false to make the
-//       api internal-only and reachable solely by the frontend inside the env —
-//       usually the more correct production choice. Pick one deliberately.
-module apiApp 'modules/containerapp.bicep' = {
+resource apiIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: apiIdentityName
+  location: location
+  tags: commonTags
+}
+
+resource frontendIdentity 'Microsoft.ManagedIdentity/userAssignedIdentities@2023-01-31' = {
+  name: frontendIdentityName
+  location: location
+  tags: commonTags
+}
+
+resource registryScope 'Microsoft.ContainerRegistry/registries@2023-07-01' existing = {
+  name: registryName
+}
+
+resource apiAcrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registryScope.id, apiIdentity.id, acrPullRoleId)
+  scope: registryScope
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
+    principalId: apiIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+  dependsOn: [
+    registry
+  ]
+}
+
+resource frontendAcrPullAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registryScope.id, frontendIdentity.id, acrPullRoleId)
+  scope: registryScope
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPullRoleId)
+    principalId: frontendIdentity.properties.principalId
+    principalType: 'ServicePrincipal'
+  }
+  dependsOn: [
+    registry
+  ]
+}
+
+resource deployerAcrPushAssignment 'Microsoft.Authorization/roleAssignments@2022-04-01' = {
+  name: guid(registryScope.id, deployerPrincipalId, acrPushRoleId)
+  scope: registryScope
+  properties: {
+    roleDefinitionId: subscriptionResourceId('Microsoft.Authorization/roleDefinitions', acrPushRoleId)
+    principalId: deployerPrincipalId
+    principalType: 'ServicePrincipal'
+  }
+  dependsOn: [
+    registry
+  ]
+}
+
+module apiApp 'modules/containerapp.bicep' = if (deployApps) {
   name: 'api-app'
   params: {
     location: location
@@ -129,25 +139,70 @@ module apiApp 'modules/containerapp.bicep' = {
     environmentId: environment.outputs.environmentId
     image: apiImage
     targetPort: 3000
-    externalIngress: true
+    externalIngress: false
     registryLoginServer: registry.outputs.loginServer
-    registryUsername: registryUsername
-    registryPassword: registryPassword
-    minReplicas: minReplicas
-    maxReplicas: maxReplicas
+    identityResourceId: apiIdentity.id
+    minReplicas: 1
+    maxReplicas: 1
     tags: commonTags
-    // TODO: Add the api's runtime env vars / secrets here (e.g. DB connection
-    //       string once you pick a database strategy).
-    env: []
+    env: [
+      {
+        name: 'PORT'
+        value: '3000'
+      }
+      {
+        name: 'DB_FILE'
+        value: '/tmp/octosupply/app.db'
+      }
+      {
+        name: 'DB_MIGRATIONS_DIR'
+        value: '/database/migrations'
+      }
+      {
+        name: 'DB_SEED_DIR'
+        value: '/database/seed'
+      }
+    ]
+    probes: [
+      {
+        type: 'Startup'
+        httpGet: {
+          path: '/health/ready'
+          port: 3000
+          scheme: 'HTTP'
+        }
+        periodSeconds: 5
+        failureThreshold: 30
+      }
+      {
+        type: 'Readiness'
+        httpGet: {
+          path: '/health/ready'
+          port: 3000
+          scheme: 'HTTP'
+        }
+        periodSeconds: 10
+        failureThreshold: 3
+      }
+      {
+        type: 'Liveness'
+        httpGet: {
+          path: '/health/live'
+          port: 3000
+          scheme: 'HTTP'
+        }
+        periodSeconds: 30
+        failureThreshold: 3
+      }
+    ]
   }
+  dependsOn: [
+    apiAcrPullAssignment
+    deployerAcrPushAssignment
+  ]
 }
 
-// -----------------------------------------------------------------------------
-// Frontend container app — nginx on 80, external, proxying to the api.
-// -----------------------------------------------------------------------------
-// The API_HOST/API_PORT env vars tell nginx where the api lives. Using the api
-// app name resolves inside the environment for service discovery.
-module frontendApp 'modules/containerapp.bicep' = {
+module frontendApp 'modules/containerapp.bicep' = if (deployApps) {
   name: 'frontend-app'
   params: {
     location: location
@@ -157,37 +212,90 @@ module frontendApp 'modules/containerapp.bicep' = {
     targetPort: 80
     externalIngress: true
     registryLoginServer: registry.outputs.loginServer
-    registryUsername: registryUsername
-    registryPassword: registryPassword
-    minReplicas: minReplicas
-    maxReplicas: maxReplicas
+    identityResourceId: frontendIdentity.id
+    minReplicas: 1
+    maxReplicas: 3
     tags: commonTags
     env: [
       {
         name: 'API_HOST'
-        value: apiAppName
+        value: apiApp!.outputs.fqdn
       }
       {
         name: 'API_PORT'
-        // TODO: If you make the api internal-only, confirm the frontend still
-        //       reaches it on 3000 within the environment (it should). If you
-        //       front the api on 443/https externally, adjust API_PORT/PROTOCOL.
-        value: '3000'
+        value: '443'
       }
-      // TODO: The entrypoint also honours API_PROTOCOL (default https). Add it
-      //       here if your ingress/scheme requires it.
+      {
+        name: 'API_PROTOCOL'
+        value: 'https'
+      }
+      {
+        name: 'API_RESOLVER'
+        value: '168.63.129.16'
+      }
+    ]
+    probes: [
+      {
+        type: 'Startup'
+        httpGet: {
+          path: '/'
+          port: 80
+          scheme: 'HTTP'
+        }
+        periodSeconds: 5
+        failureThreshold: 30
+      }
+      {
+        type: 'Readiness'
+        httpGet: {
+          path: '/'
+          port: 80
+          scheme: 'HTTP'
+        }
+        periodSeconds: 10
+        failureThreshold: 3
+      }
+      {
+        type: 'Liveness'
+        httpGet: {
+          path: '/'
+          port: 80
+          scheme: 'HTTP'
+        }
+        periodSeconds: 30
+        failureThreshold: 3
+      }
     ]
   }
+  dependsOn: [
+    frontendAcrPullAssignment
+    deployerAcrPushAssignment
+  ]
 }
 
-// -----------------------------------------------------------------------------
-// Outputs
-// -----------------------------------------------------------------------------
-@description('ACR login server — push images here and reference them in the apps.')
+@description('ACR login server for image builds and pulls.')
 output acrLoginServer string = registry.outputs.loginServer
 
-@description('Public URL of the frontend app.')
-output frontendUrl string = 'https://${frontendApp.outputs.fqdn}'
+@description('Globally unique Azure Container Registry name.')
+output acrName string = registry.outputs.registryName
 
-@description('FQDN of the api app (public only while externalIngress is true).')
-output apiFqdn string = apiApp.outputs.fqdn
+@description('Resource ID of the Azure Container Registry.')
+output acrResourceId string = registry.outputs.registryId
+
+@description('Resource ID of the API managed identity.')
+output apiIdentityResourceId string = apiIdentity.id
+
+@description('Resource ID of the frontend managed identity.')
+output frontendIdentityResourceId string = frontendIdentity.id
+
+@description('API Container App name; API ingress is internal.')
+output apiAppName string = apiAppName
+
+@description('Frontend Container App name.')
+output frontendAppName string = frontendAppName
+
+@description('Internal API ingress FQDN.')
+output apiFqdn string = deployApps ? apiApp!.outputs.fqdn : ''
+
+@description('Public frontend URL; empty until the apps stage is deployed.')
+output frontendUrl string = deployApps ? 'https://${frontendApp!.outputs.fqdn}' : ''

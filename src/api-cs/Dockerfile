@@ -1,16 +1,16 @@
 FROM mcr.microsoft.com/dotnet/sdk:10.0 AS build
 WORKDIR /source
 
-COPY src/api-cs/OctoSupply.Api.csproj src/api-cs/
-RUN dotnet restore src/api-cs/OctoSupply.Api.csproj
-COPY src/api-cs/ src/api-cs/
-RUN dotnet publish src/api-cs/OctoSupply.Api.csproj --configuration Release --output /app/publish --no-restore
+COPY api-cs/OctoSupply.Api.csproj api-cs/
+RUN dotnet restore api-cs/OctoSupply.Api.csproj
+COPY api-cs/ api-cs/
+RUN dotnet publish api-cs/OctoSupply.Api.csproj --configuration Release --output /app/publish --no-restore
 
 FROM mcr.microsoft.com/dotnet/aspnet:10.0-alpine
 WORKDIR /app
 COPY --from=build /app/publish .
-COPY src/database/migrations/ /database/migrations/
-COPY src/database/seed/ /database/seed/
+COPY database/migrations/ /database/migrations/
+COPY database/seed/ /database/seed/
 
 ENV PORT=3000 \
     DB_FILE=/tmp/octosupply/app.db \
