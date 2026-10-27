@@ -95,6 +95,10 @@ make test-ts
 make test-cs
 make test-py
 make test-java
+
+# Frontend tests (run from src/frontend)
+npm run test:unit   # Vitest + React Testing Library (src/**/*.test.tsx)
+npm run test:e2e    # Playwright (tests/e2e)
 ```
 
 ## API Variants — Port Reference

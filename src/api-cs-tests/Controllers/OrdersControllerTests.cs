@@ -82,6 +82,106 @@ public sealed class OrdersControllerTests
         }
     }
 
+    [Theory]
+    [InlineData("0", "VALIDATION_ERROR")]
+    [InlineData("-5", "VALIDATION_ERROR")]
+    [InlineData("", "VALIDATION_ERROR")]
+    [InlineData("abc", null)]
+    [InlineData("1.5", null)]
+    [InlineData("99999999999", null)]
+    public async Task GetHistory_InvalidBranchIdReturnsBadRequest(string branchId, string? expectedErrorCode)
+    {
+        await WithApiAsync(async (client, _) =>
+        {
+            var response = await client.GetAsync($"/api/orders?branchId={Uri.EscapeDataString(branchId)}");
+
+            Assert.Equal(HttpStatusCode.BadRequest, response.StatusCode);
+            if (expectedErrorCode is not null)
+            {
+                var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+                Assert.Equal(expectedErrorCode, body.GetProperty("error").GetProperty("code").GetString());
+            }
+        });
+    }
+
+    [Fact]
+    public async Task GetHistory_UnknownBranchReturnsNotFoundErrorPayload()
+    {
+        await WithApiAsync(async (client, _) =>
+        {
+            var response = await client.GetAsync("/api/orders?branchId=987659");
+
+            Assert.Equal(HttpStatusCode.NotFound, response.StatusCode);
+            var body = await response.Content.ReadFromJsonAsync<JsonElement>();
+            Assert.Equal("NOT_FOUND", body.GetProperty("error").GetProperty("code").GetString());
+        });
+    }
+
+    [Fact]
+    public async Task GetHistory_ReturnsCamelCaseJsonShapeExpectedByFrontend()
+    {
+        await WithApiAsync(async (client, dbPath) =>
+        {
+            await InsertTestDataAsync(dbPath);
+
+            var history = await client.GetFromJsonAsync<JsonElement>("/api/orders?branchId=987650");
+
+            var order = history.EnumerateArray().First();
+            foreach (var property in new[] { "orderId", "branchId", "orderDate", "name", "status", "lineItems", "total" })
+            {
+                Assert.True(order.TryGetProperty(property, out _), $"Missing '{property}'");
+            }
+            var lineItem = order.GetProperty("lineItems").EnumerateArray().First();
+            foreach (var property in new[] { "productId", "productName", "quantity", "unitPrice" })
+            {
+                Assert.True(lineItem.TryGetProperty(property, out _), $"Missing line item '{property}'");
+            }
+        });
+    }
+
+    [Fact]
+    public async Task GetHistory_ReflectsOrderDeletedThroughApi()
+    {
+        await WithApiAsync(async (client, dbPath) =>
+        {
+            await InsertTestDataAsync(dbPath);
+
+            var deleteResponse = await client.DeleteAsync("/api/orders/987650");
+            Assert.Equal(HttpStatusCode.NoContent, deleteResponse.StatusCode);
+
+            var history = await client.GetFromJsonAsync<List<OrderHistory>>("/api/orders?branchId=987650");
+            Assert.NotNull(history);
+            Assert.Equal(987651, Assert.Single(history).OrderId);
+        });
+    }
+
+    private static async Task WithApiAsync(Func<HttpClient, string, Task> test)
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"octosupply-api-tests-{Guid.NewGuid():N}.db");
+        var previousDbFile = Environment.GetEnvironmentVariable("DB_FILE");
+        var previousMigrationsDir = Environment.GetEnvironmentVariable("DB_MIGRATIONS_DIR");
+        var migrationsDir = Path.GetFullPath(Path.Combine(AppContext.BaseDirectory, "../../../../database/migrations"));
+        Environment.SetEnvironmentVariable("DB_FILE", dbPath);
+        Environment.SetEnvironmentVariable("DB_MIGRATIONS_DIR", migrationsDir);
+
+        try
+        {
+            using var factory = new WebApplicationFactory<Program>();
+            using var client = factory.CreateClient();
+            await test(client, dbPath);
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DB_FILE", previousDbFile);
+            Environment.SetEnvironmentVariable("DB_MIGRATIONS_DIR", previousMigrationsDir);
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(dbPath))
+            {
+                File.Delete(dbPath);
+            }
+        }
+    }
+
     private static async Task InsertTestDataAsync(string dbPath)
     {
         await using var connection = new SqliteConnection($"Data Source={dbPath}");

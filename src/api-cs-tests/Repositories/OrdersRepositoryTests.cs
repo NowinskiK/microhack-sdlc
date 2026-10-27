@@ -1,3 +1,5 @@
+using Microsoft.AspNetCore.Http;
+using Microsoft.Data.Sqlite;
 using Microsoft.Extensions.Logging.Abstractions;
 using OctoSupply.Api.Data;
 using OctoSupply.Api.Repositories;
@@ -83,6 +85,105 @@ public sealed class OrdersRepositoryTests
         }
     }
 
+    [Theory]
+    [InlineData(0)]
+    [InlineData(-1)]
+    [InlineData(int.MinValue)]
+    public async Task FindHistoryByBranchId_RejectsNonPositiveBranchIdBeforeQuerying(int branchId)
+    {
+        await WithDatabaseAsync(async factory =>
+        {
+            var exception = await Assert.ThrowsAsync<ValidationException>(() =>
+                new OrdersRepository(factory).FindHistoryByBranchIdAsync(branchId));
+            Assert.Equal(StatusCodes.Status400BadRequest, exception.StatusCode);
+        });
+    }
+
+    [Fact]
+    public async Task FindHistoryByBranchId_ReturnsEmptyListForBranchWithoutOrders()
+    {
+        await WithDatabaseAsync(async factory =>
+        {
+            await EnsureSchemaAndDataAsync(factory);
+
+            var history = await new OrdersRepository(factory).FindHistoryByBranchIdAsync(3);
+
+            Assert.Empty(history);
+        });
+    }
+
+    [Fact]
+    public async Task FindHistoryByBranchId_OrdersNewestFirstWithIdTiebreakAndLineItemsByDetailId()
+    {
+        await WithDatabaseAsync(async factory =>
+        {
+            await EnsureSchemaAndDataAsync(factory);
+            await ExecuteAsync(factory, """
+                INSERT INTO products VALUES (101, 'Second Product');
+                INSERT INTO orders VALUES (13, 1, '2026-01-02', 'Same day, higher id', NULL, 'pending');
+                INSERT INTO order_details VALUES
+                    (1003, 13, 101, 1, 1.0),
+                    (1002, 13, 100, 3, 2.0);
+                """);
+
+            var history = await new OrdersRepository(factory).FindHistoryByBranchIdAsync(1);
+
+            Assert.Equal([13, 10, 11], history.Select(order => order.OrderId));
+            var sameDayOrder = history[0];
+            Assert.Equal(
+                [("Test Product", 3), ("Second Product", 1)],
+                sameDayOrder.LineItems.Select(item => (item.ProductName, item.Quantity)));
+            Assert.Equal(7, sameDayOrder.Total);
+        });
+    }
+
+    [Fact]
+    public async Task FindHistoryByBranchId_MapsNullableDescriptionAndBranchId()
+    {
+        await WithDatabaseAsync(async factory =>
+        {
+            await EnsureSchemaAndDataAsync(factory);
+            await ExecuteAsync(factory, """
+                INSERT INTO orders VALUES (14, 2, '2026-01-04', 'Described order', 'Rush delivery', 'pending');
+                """);
+
+            var history = await new OrdersRepository(factory).FindHistoryByBranchIdAsync(2);
+
+            Assert.All(history, order => Assert.Equal(2, order.BranchId));
+            Assert.Equal("Rush delivery", Assert.Single(history, order => order.OrderId == 14).Description);
+            Assert.Null(Assert.Single(history, order => order.OrderId == 12).Description);
+        });
+    }
+
+    private static async Task WithDatabaseAsync(Func<SqliteConnectionFactory, Task> test)
+    {
+        var dbPath = Path.Combine(Path.GetTempPath(), $"octosupply-tests-{Guid.NewGuid():N}.db");
+        var previousDbFile = Environment.GetEnvironmentVariable("DB_FILE");
+        Environment.SetEnvironmentVariable("DB_FILE", dbPath);
+
+        try
+        {
+            await test(new SqliteConnectionFactory(new NullLogger<SqliteConnectionFactory>()));
+        }
+        finally
+        {
+            Environment.SetEnvironmentVariable("DB_FILE", previousDbFile);
+            SqliteConnection.ClearAllPools();
+            if (File.Exists(dbPath))
+            {
+                File.Delete(dbPath);
+            }
+        }
+    }
+
+    private static async Task ExecuteAsync(SqliteConnectionFactory connectionFactory, string sql)
+    {
+        await using var connection = await connectionFactory.OpenConnectionAsync();
+        await using var cmd = connection.CreateCommand();
+        cmd.CommandText = sql;
+        await cmd.ExecuteNonQueryAsync();
+    }
+
     private static async Task EnsureSchemaAndDataAsync(SqliteConnectionFactory connectionFactory)
     {
         await using var connection = await connectionFactory.OpenConnectionAsync();
@@ -105,7 +206,7 @@ public sealed class OrdersRepositoryTests
                 quantity INTEGER NOT NULL,
                 unit_price REAL NOT NULL
             );
-            INSERT INTO branches VALUES (1), (2);
+            INSERT INTO branches VALUES (1), (2), (3);
             INSERT INTO products VALUES (100, 'Test Product');
             INSERT INTO orders VALUES
                 (10, 1, '2026-01-02', 'Order with items', NULL, 'shipped'),
