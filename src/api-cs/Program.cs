@@ -54,6 +54,15 @@ app.UseCors("ApiCors");
 app.UseMiddleware<ErrorHandlingMiddleware>();
 
 app.MapGet("/", () => "Hello, world!");
+app.MapGet("/health/live", () => Results.Ok(new { status = "ok" }))
+    .WithSummary("Liveness check")
+    .WithDescription("Confirms the API process is running. This check does not access the database.");
+app.MapGet("/health/ready", async (DatabaseMigrator databaseMigrator) =>
+    await databaseMigrator.IsReadyAsync()
+        ? Results.Ok(new { status = "ready" })
+        : Results.StatusCode(StatusCodes.Status503ServiceUnavailable))
+    .WithSummary("Readiness check")
+    .WithDescription("Confirms startup initialization completed and the SQLite database is accessible.");
 app.MapControllers();
 
 var migrator = app.Services.GetRequiredService<DatabaseMigrator>();
